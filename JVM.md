@@ -8,7 +8,41 @@
 
 -- index -- | -- opcode -- | [ -- oprand1-- [ -- oprand2 -- ]] [ -- comment --]
 
+index表示指令在当前方法数组中的索引
 
+opcode表示指令操作代码的助记符，还有0个或者多个操作数
+
+comment是可选的一部分由javap产生；一部分则由代码作者提供。
+
+index也可以当做是控制转换的索引地址，例如：goto 8，跳转到第8行指令继续。
+
+还有一种指令：9 invokevirtual #4，#4就是指向运行时常量池中某个常量的引用
+
+
+
+## Accessing the Run-Time Constant Pool
+
+许多数字常量，同样的像对象，域，和方法，可以通过当前类的运行时常量进行获取。对象的获取后面再考虑。int，long，float和double以及对String实例的引用数据，都是使用ldc，ldc_w，和ldc2_w指令进行管理的。
+
+多方考证，对StringTable和SymbolType描述最符合实际的一篇文章--[聊聊jvm的StringTable及SymbolTable](https://blog.csdn.net/weixin_34360651/article/details/91460994)
+
+
+
+[StringTable详解](https://blog.csdn.net/zuodaoyong/article/details/107296585)
+
+字符串对象:
+
+```java
+String s0 = new String("abc"); //这玩意存放在堆中
+//1.s0 = s0.intern();
+String s1 = "abc"; //这玩意存放在StringTable中，而StringTable是在运行时常量池中，运行时常量池是由常量池在运行时生成的一块存放数据的区域，存放在Method Area中！！！！！
+//2.s0 = s0.intern();
+System.out.println(s0 == s1);
+```
+
+那么问题来了，在JDK8中上面的两个变量还相等吗？！显然不等啊，一个是对堆空间对象"a"的引用地址，另一个是对StringTable中"a"的地址，能一样吗？！！！那怎么才能一样呢？！那就是让s0调用一下intern();那么是加在1的位置还是2的位置，才能让他俩相等呢？！！！1和2的位置都一样的啦！！！！
+
+StringTable在Method Area中G1垃圾回收器会对其中的常量进行回收处理的！
 
 
 
@@ -422,9 +456,29 @@ GC发生的主要区域在Heap区和Method Area，
 
 ### 引用计数算法
 
+无法解决对象的循环引用问题，所以我们Java使用的垃圾回收器中，并不使用此算法进行对象是否为垃圾的判断。听说python中的垃圾回收使用的是此算法。
+
 
 
 ### 可达性分析算法
+
+通过一系列的称为GC Roots的对象作为起始点,从这些节点开始向下搜索,搜索所经过的路径称为引用链（Reference Chain），当一个对象到GC Roots没有任何引用链相连（在图论中称为对象不可达）时，这个对象就是不可用的。找出所有可用对象，其余空间为”无用“。
+
+那我们就来看看GC Roots，首先那些可以被称之为"Roots"：
+
+​	--	java虚拟机栈中当前活跃的栈帧中的引用（引用类型参数、局部变量、临时值）
+
+​	--	本地方法栈中的JNI（native方法）中的引用
+
+​	--	方法区中的静态变量、常量的引用
+
+​	--	所有当前被加载的Java类
+
+​	-- 	对于分代收集来说，如果在进行minor GC/young GC时，那么从old gen中指向young gen中的引用就必须作为minor GC/young 			GC的GC Roots的一部分。
+
+
+
+
 
 
 
@@ -440,9 +494,13 @@ GC发生的主要区域在Heap区和Method Area，
 
 ### 弱引用
 
+[弱引用的场景与示例](https://www.cnblogs.com/absfree/p/5555687.html)
+
 只要垃圾回收器工作就回收
 
 ### 虚引用
+
+[虚引用的场景与示例](https://www.cnblogs.com/mfrank/p/9837070.html)
 
 无法通过引用获取对象，只做垃圾回收工作追踪使用
 
@@ -480,9 +538,39 @@ GC发生的主要区域在Heap区和Method Area，
 
 
 
+## GC方法
+
+System.gc()是Full GC，但是不建议使用，finalize()，可用于复活对象，只能调用一次
 
 
 
+
+
+### HotSpot VM
+
+其中的GC分为两种:
+
+​	--	partial GC
+
+​			并不回收整个GC堆的模式
+
+​			--	Young GC : 只收集young gen年轻代
+
+​			--	Old GC：只收集old gen老年代，只有CMS的Concurrent Collection是这个模式
+
+​			--	Mixed GC：收集整个young gen、以及部分的old gen。只有G1有这个模式。
+
+​	--	Full GC
+
+​			收集整个堆空间，包括young gen、old gen、perm gen(如果存在的话)等所有部分的模式。
+
+
+
+
+
+# JMX
+
+Java Management Extension，Java管理扩展。
 
 
 
