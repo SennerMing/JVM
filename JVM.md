@@ -54,6 +54,18 @@ StringTable在Method Area中G1垃圾回收器会对其中的常量进行回收�
 
 # Loading，Linking And Initializing（加载链接以及初始化）
 
+.java file →javac →.class file → Class Loader Sub System[Loading（bootstrap、extension、application）| Linking（verifycation→preparation→resolution） | Initialization]
+
+Bootstrap class loader加载rt.jar，将所有需要的材料添加到运行时环境中
+
+Extension class loader加载jre/lib/ext中的jar
+
+Application class loader加载ClassPath下用户定义的类
+
+
+
+
+
 ## 1 Java Virtual Machine Startup（java虚拟机的启动）
 
 
@@ -61,6 +73,24 @@ StringTable在Method Area中G1垃圾回收器会对其中的常量进行回收�
 ## 2 Creation And Loading（创建与加载）
 
 ClassLoader分为两类：启动类加载器和用户定义类加载器
+
+Loading阶段主要工作是从各种源中将类加载到Method Area，生成大Class对象，为接下来的操作提供材料。
+
+1.通过类的全限定名获取这个类对应的byteCode二进制流
+
+“材料”获取的途径：
+
+​	--	jar、war包
+
+​	--	网络二进制流中
+
+​	--	动态获取，例如：动态代理使用的动态生成字节码
+
+2.将二进制流转换成Method Area存储格式的，作为原始资料放入Method Area
+
+3.将Method Area 的Class信息解析生成堆空间的大Class对象，供运行时操作，作为方法区各种数据访问的入口
+
+
 
 ### 2.1 Loading using the Bootstrap Class Loader（使用启动类加载器）
 
@@ -86,9 +116,147 @@ AppClassLoader（应用类加载器）
 
 ## 3 Linking（链接）
 
+
+
+进行Linking操作的必要条件及必要操作：
+
+​	--	A class or interface is completely loaded before it is linked
+
+​	--	A class or interface is completely verified and prepared before it is initialized
+
+​	--	Errors deteced during linkage are thrown at a point in the program where some action is taken by the program that might,directly or indirectly, require linkage to the class or interface involved in the error
+
+举个例子，一个JVM实现可能会选择独立的解析类或者接口中的每一个符号引用，当这个类或者接口使用（"lazy"或者"late"的方案），或者在class是验证（"eager"或者"static"的方案）情况下时立刻被加载。这意味着resolution处理可能继续，在某些实现中，在类或者接口已经被初始化后。无论接下来采取哪种策略，任何在resolution过程中检测到的error必须被抛出，（在程序中直接或者间接使用对类或者几口的符号引用的时间点）。
+
+由于Linking操作需要对新的数据结构进行内存空间的分配，可能会因此引发OutOfMemoryError！
+
 ### 3.1 Verification(校验)
 
+verification之前的操作还有两个重要的操作
 
+#### 3.1.1 Format Checking
+
+​	--	The first four bytes must contain the right magic number.
+
+​	-- 	All recognized attributes must be of the proper length.
+
+​	--	The class file must not be truncated（缩减的，删节的） or have extra bytes at the end.
+
+​	--	The constant pool must satisfy the constraints documented throughout（自始至终的）（The Constant Pool就是满足常量池的相关约束）
+
+​	--	All field references and method references in the constant pool must have valid names, valid classes, and valid descriptors.
+
+format checking不保证指定类中的指定的field或者method实际是存在的，也不保证描述符指向实际存在的类。format checking只保证以上这些东西是格式正确的。在bytecodes自身被校验和解析中会进行更多细节的检查。
+
+这些对基本class格式文件的检查，对class格式文件内容的翻译来说是有必要的。Format checking有别于bytecode的verification，在历史上由于他们都是一种完整性校验的形式而经常被人们混淆
+
+#### 3.1.2 Constraints Checking
+
+constraints on java virtual machine code，先来介绍一下
+
+一个方法、实例的初始化方法，亦或是类或者接口的初始化方法都存储在.class文件结构中method info的Code属性中的code数组中(.class→method_info→Code属性→code数组)
+
+下面介绍下与Code_attribute结构中内容相关的约束。
+
+##### 3.1.2.1 Static Constraints
+
+static cnstraints，类文件上的静态约束表示文件格式良好的约束。除了对.class文件中代码的静态约束，这些约束在上一个部分Format Checking中已经给出。.class文件中对code的静态约束详细说明了，JVM指令应该怎样在code数组中布局和每个独立指令的操作数应该是怎样的。
+
+下面是code数组中对指令的静态约束：
+
+​	--	只有在 [6.5章 Instruction](https://docs.oracle.com/javase/specs/jvms/se8/jvms8.pdf) 中提到的指令才能出现在code数组中。只有[6.2章 opcodes](https://docs.oracle.com/javase/specs/jvms/se8/jvms8.pdf)中指定的操作码才能出现，任何文档中没有定义的指令和操作码都不能出现在code数组中。如果class格式文件的版本号是51.0及以上，那么无论是操作码jsr或者是jsr_w都不会出现在code数组中。
+
+​	--	在code数组中第一个指令的操作码的索引为0
+
+​	--	对于code数组中的每一个指令除了最后一个，下一个指令的操作码的索引等于当前指令操作码的索引加上该指令的长度，包括其所有的操作码。出于以下目的wide指令将会像其他任何指令一样被处理；  指定宽指令要修改的操作的操作码将会被当作该wide指令的操作数中的一员进行处理。
+
+​	--	在code数组中的最后一个指令的最后一个字节的索引必须是code_length-1
+
+以下是在code数组中对指令中操作数的静态约束：
+
+​	--	在当前方法中每个跳转或者是分支指令都必须是这些（jsr, jsr_w, goto, goto_w, ifeq, ifne, ifle, iflt, ifge, ifgt, ifnull, ifnonnull, if_icmpeq, if_icmpne, if_icmple, if_icmplt, if_icmpge, if_icmpgt, if_acmpeq, if_acmpne）。以跳转或者分支的指令必须不能是被用来指定wide指令修改的操作的操作码。
+
+​	--	在当前方法中，对于每个[tableswitch](https://blog.csdn.net/john1337/article/details/88420273)指令的每个目标，包括默认，必须是指令操作码。同样也适用于lookupswitch指令，对操作数的规范。
+
+​	--	操作数指令ldc和ldc_w指令，必须是正确的常量池表的索引。不同version的.class文件中对一些常量的使用是不同的，需要注意。
+
+更多内容可以参照[JVM规范4.9.1](https://docs.oracle.com/javase/specs/jvms/se8/jvms8.pdf)大多是对指令的操作数和操作码进行规范的，保证索引，对常量池的引用的正确性，保证代码符合规范。
+
+
+
+##### 3.1.2.2 Structural Constraints
+
+code数组中的structural constraints指定了JVM指令之间的关系。
+
+以下是一些structual constraints：
+
+​	--	每个指令的执行，必须满足在操作数栈和本地变量表中存在合适的类型与数量的参数，不管导致他被调用的执行路径是什么。对int类型的操作指令，也同样适用与操作boolean、byte、char和short类型的值。
+
+​	--	在不同的执行路径下执行一个指令，在指令的执行之前，操作数栈必须拥有同样的深度。
+
+​	--	在执行期间的任何时候，操作数栈增长的深度都不能超过max_stack指定的深度。
+
+​	--	任何指令的执行都不能弹出比该指令包含的在操作数栈中的更多的值。
+
+​	--	在分配值之前，局部变量不能被获取
+
+更多内容可以参照[JVM规范4.9.2](https://docs.oracle.com/javase/specs/jvms/se8/jvms8.pdf)大多是对操作指令进行的规范，像是special和virtual方法的调用，方法的返回值，操作数栈的规范等，保证代码指令间相互的引用没什么问题。
+
+Format Checking与Constural Checking结束，那么就正式开始Verfication。
+
+尽管Java编程语言的编译器必须只生成满足前面部分中所有静态和结构约束的类文件，但Java虚拟机不能保证它被要求加载的任何文件都是由该编译器生成的或格式正确。像web浏览器这样的应用程序不下载源代码，然后编译源代码；这些应用程序下载已经编译的类文件。文件浏览器需要确定类文件是由可信的编译器生成的，还是由试图利用Java虚拟机的对手生成的。
+
+​	--	编译时检查的另一个问题是版本倾斜。用户可能已经成功地将一个类（比如PurchaseStockOptions）编译为TradingClass的子类。但是TradingClass的定义可能已经改变了，因为该类的编译方式与现有的二进制文件不兼容。方法可能已被删除或其返回类型或修饰符已更改。字段可能已经更改了类型或从实例变量更改为类变量。方法或变量的访问修饰符可能已从public更改为private。有关这些问题的讨论，请参阅Java语言规范JavaSE8版第13章“二进制兼容性”。
+
+由于这些潜在的问题，Java虚拟机需要自己验证它试图合并的类文件是否满足了所需的约束。Java虚拟机的实现验证每个类文件在linking time链接时是否满足必要的约束（§5.4）。
+
+链接时验证提高了运行时解释器的性能。可以消除在运行时为验证每个已解释指令的约束而必须执行的昂贵检查。Java虚拟机可以假设已经执行了这些检查。例如，Java虚拟机已经知道以下内容：
+
+​	--	没有操作数堆栈溢出或下溢。
+
+​	--	所有局部变量的使用和存储都是有效的。
+
+​	--	所有Java虚拟机指令的参数都是有效类型。
+
+Java虚拟机实现可以使用两种策略进行验证：
+
+​	--	必须使用类型检查验证版本号大于或等于50.0的类文件。
+
+​	--	除了那些符合 Java ME CLDC和Java Card概要文件的Java虚拟机实现之外，所有Java虚拟机实现都必须支持类型推断验证，以便验证版本号小于50.0的类文件。支持 Java ME CLDC和Java Card配置文件的Java虚拟机实现的验证由它们各自的规范管理。
+
+在这两种策略中，验证主要涉及对代码属性的代码数组（§4.7.3）实施§4.9中的静态和结构约束。但是，在验证过程中必须执行代码属性之外的三个附加检查：
+
+​	--	确保最终类不是子类。
+
+​	--	确保最终方法不被覆盖（§5.4.5）。
+
+​	--	检查每个类（对象除外）是否有一个直接超类。
+
+
+
+Verification操作是用来确保类或者接口的二进制形式结构是正确的。Verification可能会导致附加类或者接口的加载，但是并不需要对他们进行验证或者准备操作
+
+如果类或者接口的二进制形式不满足静态或者结构性约束，那么将会在不满足条件的类或者接口的点抛出VerifyError
+
+如果JVM尝试验证一个类或者接口由于抛出了LinkageError（或者是它的子类Error）而失败，那么接下来的对该类或者接口的验证尝试也将会失败，并抛出同样的错误。
+
+##### 3.1.2.3 Verification by Type Checking
+
+版本号为50.0或以上（§4.1）的类文件必须使用本节给出的类型检查规则进行验证。
+
+如果并且仅当类文件的版本号等于50.0，那么如果类型检查失败，Java虚拟机实现可以选择尝试通过类型推断执行验证（§4.10.2）。
+
+​	--	这是一个务实的调整，旨在缓和向新的核查纪律的过渡。许多操作类文件的工具可能会以需要调整方法堆栈映射帧的方式更改方法的字节码。如果工具没有对堆栈映射帧进行必要的调整，那么即使字节码原则上是有效的，类型检查也可能失败（因此将在旧的类型推断方案下进行验证）。为了让实现者有时间调整他们的工具，Java虚拟机实现可能会退回到较旧的验证规程，但时间有限。
+
+​	--	在类型检查失败但调用类型推断并成功的情况下，预期会有一定的性能损失。这样的处罚是不可避免的。它还应该向工具供应商发出信号，表明他们的输出需要调整，并为供应商提供额外的动力来进行这些调整。
+
+​	--	总之，通过类型推断将故障转移到验证支持将堆栈映射帧逐渐添加到Java SE平台（如果50.0版类文件中不存在这些帧，则允许进行故障转移）以及从Java SE平台中逐渐删除jsr和jsr_w指令（如果它们存在于50.0版类文件中，允许故障转移）。
+
+如果Java虚拟机的实现曾经尝试对version50.0类文件执行类型推断验证，那么在类型检查验证失败的所有情况下，它都必须这样做。
+
+​	--	这意味着Java虚拟机实现不能选择在一种情况下而不是在另一种情况下使用类型推断。它必须拒绝未通过类型检查进行验证的类文件，或者在类型检查失败时始终故障转移到类型推断验证器。
+
+类型检查器强制执行通过Prolog子句指定的类型规则。英语文本是用来描述类型规则的非正式方式，而Prolog子句提供了一个正式的规范
 
 ### 3.2 Preparation（准备）
 
@@ -449,6 +617,34 @@ java是解释与编译相结合的语言，由逃逸分析而生的标量替换�
 # Garbage Collector（垃圾收集器）
 
 GC发生的主要区域在Heap区和Method Area，
+
+首先来个正规的介绍，what is garbage collector?
+
+垃圾收集器可以自动的管理应用的动态内存分配需求。
+
+垃圾收集器通过以下操作来执行自动动态内存管理：
+
+​	--	从操作系统中分配和归还内存
+
+​	--	将内存分发给有需要的应用
+
+​	--	确定哪一部分的内存还被应用所使用
+
+​	--	回收不用的内存给应用重新使用
+
+Java的HotSpot垃圾收集器使用各种各样的技术来提高效率，比如以下的操作：
+
+​	--	使用generational（代与代之间）的scavenging（清理）与aging（老化）in conjunction with（相结合）的方式，将精力集中在堆中最有可能包含大量可回收内存区域的地方
+
+​	--	使用多线程来aggressively（积极的）让操作并行，或者在程序的后台并发的执行一些long-running（长时间运行）的操作
+
+​	--	尝试通过压缩存活对象来recover(恢复)更大的连续自由内存空间
+
+
+
+
+
+
 
 # 垃圾回收
 
